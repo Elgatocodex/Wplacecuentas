@@ -13,6 +13,18 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
+      - name: Localizar el proyecto Gradle
+        run: |
+          f=$(find . -name settings.gradle.kts -not -path '*/.git/*' | head -1)
+          if [ -z "$f" ]; then
+            echo "No se encontró settings.gradle.kts en el repositorio. Archivos:"
+            find . -maxdepth 3 -not -path '*/.git/*' | head -50
+            exit 1
+          fi
+          dir=$(dirname "$f")
+          echo "Proyecto en: $dir"
+          echo "PROJECT_DIR=$dir" >> "$GITHUB_ENV"
+
       - name: Java 17
         uses: actions/setup-java@v4
         with:
@@ -30,7 +42,8 @@ jobs:
       - name: Compilar APK debug
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee build.log
+          cd "$PROJECT_DIR"
+          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Resumen del error (si falla)
         if: failure()
@@ -38,7 +51,7 @@ jobs:
           {
             echo '## Causa del fallo'
             echo '```'
-            grep -n -E "^e: |error:|What went wrong|Could not (resolve|find|download)|> .*(not found|failed|requires)|Execution failed|Caused by" build.log | head -40
+            grep -n -E "^e: |error:|What went wrong|Could not (resolve|find|download)|Execution failed|Caused by" build.log | head -40
             echo '```'
             echo
             echo '### Bloque "What went wrong"'
@@ -59,5 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: WplaceCuentas-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
