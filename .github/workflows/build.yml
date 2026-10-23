@@ -13,6 +13,16 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
+      - name: Descomprimir el zip si se subió sin descomprimir
+        run: |
+          if [ -z "$(find . -name settings.gradle.kts -not -path '*/.git/*' | head -1)" ]; then
+            for z in $(find . -maxdepth 2 -name '*.zip' -not -path '*/.git/*'); do
+              echo "Descomprimiendo $z"
+              mkdir -p _proyecto
+              unzip -oq "$z" -d _proyecto
+            done
+          fi
+
       - name: Localizar el proyecto Gradle
         run: |
           f=$(find . -name settings.gradle.kts -not -path '*/.git/*' | head -1)
