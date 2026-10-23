@@ -78,9 +78,14 @@ jobs:
           path: build.log
           if-no-files-found: ignore
 
+      - name: Renombrar APK
+        run: |
+          mkdir -p salida
+          cp "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk salida/WplaceCuentas.apk
+
       - name: Subir APK como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WplaceCuentas-debug-apk
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: WplaceCuentas
+          path: salida/WplaceCuentas.apk
           if-no-files-found: error
