@@ -1,91 +1,89 @@
-name: Compilar APK debug
+name: Compilar APK 1.1.0
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  apk:
+    name: Compilar WplaceCuentas 1.1.0
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Descargar código
+      - name: Descargar el código
         uses: actions/checkout@v4
-
-      - name: Descomprimir el zip si se subió sin descomprimir
-        run: |
-          if [ -z "$(find . -name settings.gradle.kts -not -path '*/.git/*' | head -1)" ]; then
-            for z in $(find . -maxdepth 2 -name '*.zip' -not -path '*/.git/*'); do
-              echo "Descomprimiendo $z"
-              mkdir -p _proyecto
-              unzip -oq "$z" -d _proyecto
-            done
-          fi
-
-      - name: Localizar el proyecto Gradle
-        run: |
-          f=$(find . -name settings.gradle.kts -not -path '*/.git/*' | head -1)
-          if [ -z "$f" ]; then
-            echo "No se encontró settings.gradle.kts en el repositorio. Archivos:"
-            find . -maxdepth 3 -not -path '*/.git/*' | head -50
-            exit 1
-          fi
-          dir=$(dirname "$f")
-          echo "Proyecto en: $dir"
-          echo "PROJECT_DIR=$dir" >> "$GITHUB_ENV"
 
       - name: Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Gradle 8.9 (sin wrapper)
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      # El proyecto no incluye gradlew: se instala Gradle 8.9 (compatible con AGP 8.7.3).
+      - name: Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: "8.9"
 
-      - name: Aceptar licencias del SDK de Android
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      # Opcional pero recomendado: clave fija para poder ACTUALIZAR encima de versiones anteriores.
+      # Crea los secrets WPLACE_KEYSTORE_B64, WPLACE_KEYSTORE_PASSWORD, WPLACE_KEY_ALIAS, WPLACE_KEY_PASSWORD.
+      - name: Preparar clave de firma
+        env:
+          KS_B64: ${{ secrets.WPLACE_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/wplace.jks"
+            echo "WPLACE_KEYSTORE_FILE=$RUNNER_TEMP/wplace.jks" >> "$GITHUB_ENV"
+            echo "Firmando con tu clave fija."
+          else
+            echo "::warning::Sin clave fija: el APK se instala, pero no podrá actualizar encima de otro firmado con otra clave."
+          fi
 
-      - name: Compilar APK debug
+      - name: Compilar APK
+        env:
+          WPLACE_KEYSTORE_PASSWORD: ${{ secrets.WPLACE_KEYSTORE_PASSWORD }}
+          WPLACE_KEY_ALIAS: ${{ secrets.WPLACE_KEY_ALIAS }}
+          WPLACE_KEY_PASSWORD: ${{ secrets.WPLACE_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
 
-      - name: Resumen del error (si falla)
+      - name: Preparar APK
+        run: |
+          mkdir -p out
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          cp "$APK" out/WplaceCuentas-1.1.0.apk
+          ls -lh out
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WplaceCuentas-1.1.0-apk
+          path: out/WplaceCuentas-1.1.0.apk
+          if-no-files-found: error
+
+      # Si falla, la causa aparece arriba, en el Resumen de la ejecución.
+      - name: Resumen del error
         if: failure()
         run: |
           {
-            echo '## Causa del fallo'
+            echo "## La compilación falló"
             echo '```'
-            grep -n -E "^e: |error:|What went wrong|Could not (resolve|find|download)|Execution failed|Caused by" build.log | head -40
-            echo '```'
-            echo
-            echo '### Bloque "What went wrong"'
-            echo '```'
-            grep -A 15 "What went wrong" build.log | head -40
+            grep -nE "What went wrong|error:|^e: |FAILURE|Could not" -A4 build.log | head -n 60
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Subir log de compilación
+      - name: Subir registro
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: build.log
           if-no-files-found: ignore
-
-      - name: Renombrar APK
-        run: |
-          mkdir -p salida
-          cp "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk salida/WplaceCuentas.apk
-
-      - name: Subir APK como artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: WplaceCuentas
-          path: salida/WplaceCuentas.apk
-          if-no-files-found: error
