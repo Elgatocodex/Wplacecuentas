@@ -1,0 +1,77 @@
+name: Compilar wplacecuentas
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Descomprimir el ZIP del proyecto
+        run: |
+          if [ -f settings.gradle.kts ]; then
+            PROJ="$PWD"
+          else
+            ZIP=$(ls *.zip 2>/dev/null | head -1)
+            if [ -z "$ZIP" ]; then
+              echo "No hay ningún .zip en la raíz del repositorio. Sube wplacecuentas.zip."
+              exit 1
+            fi
+            echo "Descomprimiendo $ZIP"
+            unzip -q -o "$ZIP" -d _proyecto
+            PROJ=$(dirname "$(find _proyecto -name settings.gradle.kts | head -1)")
+          fi
+          echo "PROJ=$PROJ" >> "$GITHUB_ENV"
+          echo "Proyecto en: $PROJ"
+          ls -la "$PROJ"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle 8.9 (sin wrapper)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Aceptar licencias del SDK de Android
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Compilar APK debug
+        working-directory: ${{ env.PROJ }}
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
+
+      - name: Resumen del error (si falló)
+        if: failure()
+        working-directory: ${{ env.PROJ }}
+        run: |
+          {
+            echo "## Errores de compilación"
+            echo '```'
+            grep -E "^e: " build.log | sed -E 's#file://[^ ]*/([^/ ]+\.kt)#\1#' | head -40
+            echo '```'
+            echo "## Motivo según Gradle"
+            echo '```'
+            grep -A12 "What went wrong" build.log | head -30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "^e: " build.log | sed -E 's#^e: file://[^ ]*/([^/ ]+\.kt):([0-9]+):([0-9]+):? (.*)#::error title=\1 línea \2::\4#' | head -20 || true
+          echo "=========== ERRORES DE KOTLIN ==========="
+          grep -E "^e: " build.log | head -40 || true
+
+      - name: Subir APK como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wplacecuentas-apk
+          path: ${{ env.PROJ }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
