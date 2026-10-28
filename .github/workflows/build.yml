@@ -5,6 +5,10 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,24 +16,50 @@ jobs:
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Descomprimir el ZIP del proyecto
+        shell: bash
         run: |
-          if [ -f settings.gradle.kts ]; then
+          set -euo pipefail
+          shopt -s nullglob nocaseglob
+          rm -rf _proyecto
+          PROJ=""
+          CAND=""; BEST=-1
+          echo "ZIPs encontrados en la raíz:"
+          for z in *.zip; do
+            echo " - $z"
+            LISTA=$(unzip -Z1 "$z" 2>/dev/null || true)
+            if grep -q 'settings\.gradle\.kts$' <<< "$LISTA"; then
+              t=$(git log -1 --format=%ct -- "$z" 2>/dev/null || echo 0)
+              [ -z "$t" ] && t=0
+              echo "   contiene un proyecto Android (commit: $t)"
+              if [ "$t" -ge "$BEST" ]; then BEST=$t; CAND="$z"; fi
+            else
+              echo "   (se ignora: no contiene settings.gradle.kts)"
+            fi
+          done
+          if [ -n "$CAND" ]; then
+            echo "Usando el ZIP más reciente: $CAND"
+            mkdir -p _proyecto
+            unzip -q -o "$CAND" -d _proyecto
+            S=$(find _proyecto -name settings.gradle.kts -not -path '*/__MACOSX/*' | awk -F/ '{print NF" "$0}' | sort -n | head -1 | cut -d' ' -f2-)
+            PROJ=$(cd "$(dirname "$S")" && pwd)
+          elif [ -f settings.gradle.kts ]; then
+            echo "No hay ZIP válido; se usa el proyecto suelto de la raíz."
             PROJ="$PWD"
           else
-            ZIP=$(ls *.zip 2>/dev/null | head -1)
-            if [ -z "$ZIP" ]; then
-              echo "No hay ningún .zip en la raíz del repositorio. Sube wplacecuentas.zip."
-              exit 1
-            fi
-            echo "Descomprimiendo $ZIP"
-            unzip -q -o "$ZIP" -d _proyecto
-            PROJ=$(dirname "$(find _proyecto -name settings.gradle.kts | head -1)")
+            echo "ERROR: no hay ningún .zip con el proyecto (wplacecuentas.zip) ni archivos del proyecto en la raíz del repositorio."
+            exit 1
           fi
-          echo "PROJ=$PROJ" >> "$GITHUB_ENV"
+          for f in settings.gradle.kts app/build.gradle.kts app/src/main/AndroidManifest.xml; do
+            if [ ! -f "$PROJ/$f" ]; then echo "ERROR: falta $f dentro del proyecto. El ZIP está incompleto."; exit 1; fi
+          done
+          echo "PROJ=$PROJ" >> "${GITHUB_ENV:-/dev/null}"
           echo "Proyecto en: $PROJ"
           ls -la "$PROJ"
+          grep -E "^geckoVersion|^geckoArtifact" "$PROJ/gradle.properties" || true
 
       - name: Java 17
         uses: actions/setup-java@v4
@@ -46,23 +76,26 @@ jobs:
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Compilar APK debug
+        shell: bash
         working-directory: ${{ env.PROJ }}
         run: |
           set -o pipefail
           gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
 
       - name: Resumen del error (si falló)
-        if: failure()
+        if: failure() && env.PROJ != ''
+        shell: bash
         working-directory: ${{ env.PROJ }}
         run: |
+          [ -f build.log ] || { echo "No hay build.log: el fallo ocurrió antes de compilar."; exit 0; }
           {
             echo "## Errores de compilación"
             echo '```'
-            grep -E "^e: " build.log | sed -E 's#file://[^ ]*/([^/ ]+\.kt)#\1#' | head -40
+            grep -E "^e: " build.log | sed -E 's#file://[^ ]*/([^/ ]+\.kt)#\1#' | head -40 || true
             echo '```'
             echo "## Motivo según Gradle"
             echo '```'
-            grep -A12 "What went wrong" build.log | head -30
+            grep -A12 "What went wrong" build.log | head -30 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           grep -E "^e: " build.log | sed -E 's#^e: file://[^ ]*/([^/ ]+\.kt):([0-9]+):([0-9]+):? (.*)#::error title=\1 línea \2::\4#' | head -20 || true
